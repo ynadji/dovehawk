@@ -36,7 +36,7 @@ export {
 
 function request2curl(r: ActiveHTTP::Request, bodyfile: string, headersfile: string): string
 {
-	local cmd = fmt("curl --header \"Authorization: %s\" -s -g -o \"%s\" -D \"%s\" -X \"%s\"",
+	local cmd = fmt("curl -k --header \"Authorization: %s\" -s -g -o \"%s\" -D \"%s\" -X \"%s\"",
 			safe_shell_quote(dovehawk::APIKEY),
 	                safe_shell_quote(bodyfile),
 	                safe_shell_quote(headersfile),
@@ -66,7 +66,7 @@ function strings_request(req: ActiveHTTP::Request): string_vec
 
 	local cmd = request2curl(req, bodyfile, headersfile);
 	local stdin_data = req?$client_data ? req$client_data : "";
-	
+
 	return when ( local result = Exec::run([$cmd=cmd, $stdin=stdin_data, $read_files=set(bodyfile, headersfile)]) )
 	{
 		# If there is no response line then nothing else will work either.
@@ -76,7 +76,7 @@ function strings_request(req: ActiveHTTP::Request): string_vec
 			Reporter::error(fmt("There was a failure when requesting \"%s\" with ActiveHTTP.", req$url));
 			return vector();  # Empty string vector indicates failure
 		}
-		
+
 		return result$files[bodyfile];
 	}
 }
@@ -85,7 +85,8 @@ function strings_request(req: ActiveHTTP::Request): string_vec
 # SIGNATURE DOWNLOAD FUNCTIONS
 function load_sigs_misp() {
 	local request: ActiveHTTP::Request = [
-		$url = MISP_URL + "attributes/text/download/zeek"
+		$url = MISP_URL + "attributes/text/download/zeek",
+                $addl_curl_args = "-k"
 	];
 	local fname = "signatures.sig";
 
@@ -122,9 +123,9 @@ function load_sigs_misp() {
 						cnt += 1;
 					}
 				}
-			
+
 			close(f);
-			
+
 			if (unlink(final_fname)) {
 				if (rename(tmp_fname,final_fname)) {
 					print "    Finished Updating File: " + fname;
@@ -151,16 +152,17 @@ function load_sigs_misp() {
 # Special option to load all the hash strings combined as a single file
 function load_all_misp() {
 	local request: ActiveHTTP::Request = [
-		$url = MISP_URL + "attributes/bro/download/all" #this will probably change to zeek eventually
+		$url = MISP_URL + "attributes/bro/download/all", #this will probably change to zeek eventually
+                $addl_curl_args = "-k"
 	];
 
     print "Downloading Indicators...";
-	
+
     when ( local lines = strings_request(request) ) {
 		if (|lines| > 0 ) {
 			print "Processing Indicators...";
 			print fmt("Number of Indicators %d", |lines|);
-	
+
 			local domaincnt = 0;
 			local ipcnt = 0;
 			local subnetcnt = 0;
@@ -170,8 +172,8 @@ function load_all_misp() {
 			local usercnt = 0;
 			local hashcnt = 0;
 			local filenamecnt = 0;
-		
-			
+
+
 			for (line in lines) {
 				local sig = strip(lines[line]);
 
@@ -270,11 +272,11 @@ function register_hit(hitvalue: string, desc: string) {
 	$url=url_string,
 	$method="POST",
 	$client_data=post_data,
-	$addl_curl_args = fmt("--header \"Authorization: %s\" --header \"Content-Type: application/json\" --header \"Accept: application/json\"", safe_shell_quote(dovehawk::APIKEY))
+	$addl_curl_args = fmt("-k --header \"Authorization: %s\" --header \"Content-Type: application/json\" --header \"Accept: application/json\"", safe_shell_quote(dovehawk::APIKEY))
     ];
-	
+
     when ( local resp = ActiveHTTP::request(request) ) {
-		
+
 		if (resp$code == 200) {
 			#print "  Sighting added";
 			print fmt("  Sighting Result ===> %s", resp$body);
@@ -283,7 +285,7 @@ function register_hit(hitvalue: string, desc: string) {
 			print fmt("  Sighting FAILED ===> %s", resp);
 		}
     }
-	
+
 }
 
 
@@ -301,18 +303,18 @@ function slack_hit(hitvalue: string, desc: string) {
 	$url=url_string,
 	$method="POST",
 	$client_data=post_data,
-	$addl_curl_args = " --header \"Content-Type: application/json\" --header \"Accept: application/json\""
+	$addl_curl_args = " -k --header \"Content-Type: application/json\" --header \"Accept: application/json\""
     ];
-	
+
     when ( local resp = ActiveHTTP::request(request) ) {
-		
+
 		if (resp$code == 200) {
 			#print "  Slack web hook success";
 		} else {
 			#print "  Slack web hook FAILED";
 		}
     }
-	
+
 }
 
 
@@ -332,20 +334,20 @@ function startup_intel() {
 		$desc = "local dummy item"
 
 	];
-	
+
 	local item : Intel::Item = [
 		$indicator = "",
 		$indicator_type = Intel::DOMAIN,
 		$meta = startup_meta
 	];
-	
+
 	# IMPORTANT: Need at least one registered otherwise item_expired hook may not be called.
 	# This fake intel item MUST be setup in order for the expiry feature to work properly.
 	# The expiry hook seems to be removed before the load_signatures function is called
 	# unless an item exists.
 	item$indicator = "www.fakedovehawkurl.zzz";
 	Intel::insert(item);
-	
+
 }
 
 
@@ -356,7 +358,7 @@ event do_reload_signatures() {
 	} else {
 
 		load_signatures();
-		
+
 		schedule signature_refresh_period { do_reload_signatures() };
 	}
 }
@@ -371,7 +373,7 @@ function load_signatures() {
 	print fmt("NETSTATS: pkts_dropped=%d  pkts_recvd=%d  pkts_link=%d  bytes_recvd=%d", ns$pkts_dropped, ns$pkts_recvd, ns$pkts_link, ns$bytes_recvd);
 
 	slack_hit("", fmt("%s: Dovehawk: Zeek %s Downloading Signatures %s [%s]. pkts_dropped=%d  pkts_recvd=%d  pkts_link=%d  bytes_recvd=%d", gethostname(), Version::number, strftime("%Y/%m/%d %H:%M:%S", network_time()), DH_VERSION, ns$pkts_dropped, ns$pkts_recvd, ns$pkts_link, ns$bytes_recvd));
-	
+
 	print fmt("Local Directory: %s", @DIR);
 	print fmt("MISP Server: %s", MISP_URL);
 
@@ -379,13 +381,13 @@ function load_signatures() {
 		print "Please edit config.zeek to include your MISP API key and URL";
 		exit(1);
 	}
-		
+
 	# Load all contains all MISP Zeek output combined
 	load_all_misp();
 
 	# Download Zeek content signatures MISP->Network Activity->Zeek items
 	load_sigs_misp();
-	
+
 	# Force output into stdout.log when using zeekctl
 	flush_all();
 }
@@ -395,12 +397,12 @@ event signature_match(state: signature_state, msg: string, data: string)
 {
 
 	local sig_id = state$sig_id;
-	
+
 	# Ensure this is a MISP signature
 	if (strstr(msg, dovehawk::SIG_PREFIX) == 0) {
 		return;
 	}
-		
+
 	local src_addr: addr;
 	local src_port: port;
 	local dst_addr: addr;
@@ -422,7 +424,7 @@ event signature_match(state: signature_state, msg: string, data: string)
 		dst_addr = state$conn$id$orig_h;
 		dst_port = state$conn$id$orig_p;
 	}
-	
+
 	local hit = "ZEEK";
 	if (state$conn?$uid) {
 		hit += fmt("|uid:%s",state$conn$uid);
@@ -430,7 +432,7 @@ event signature_match(state: signature_state, msg: string, data: string)
 	if (state$conn?$http && state$conn$http?$ts) {
 		hit += fmt("|ts:%f",state$conn$http$ts);
 	}
-	
+
 	hit += fmt("|orig_h:%s|orig_p:%s|resp_h:%s|resp_p:%s",src_addr,src_port,dst_addr,dst_port);
 
 
@@ -550,7 +552,7 @@ event signature_match(state: signature_state, msg: string, data: string)
 
 
 	hit += "|sigid:" + sig_id + "|msg:" + msg;
-	
+
 	# This should always be true but check just in case
 	if (|hit| < 1800) {
 		# Trim the matched data down to fit the sql hit structure limit
@@ -559,7 +561,7 @@ event signature_match(state: signature_state, msg: string, data: string)
 
 		hit += "|data:" + data;
 	}
-	
+
 	register_hit("%" + sig_id + "%", hit); #%wildcards required for search
 
 	print "Content Signature Hit ===> " + sig_id;
